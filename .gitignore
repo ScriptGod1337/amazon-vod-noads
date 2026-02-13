@@ -1,0 +1,23 @@
+# APKs, decompiles, and analysis artifacts
+analysis/apks/
+analysis/decompiled/
+analysis/**/*.apk
+analysis/**/*.apks
+analysis/**/*.xapk
+
+# ReVanced tool artifacts
+analysis/tools/revanced/*.jar
+analysis/tools/revanced/*.rvp
+analysis/tools/revanced/*.asc
+
+# Local build outputs
+analysis/revanced-patches/**/build/
+analysis/revanced-patches/.gradle/
+analysis/revanced-patches/local.properties
+
+# OS / editor
+.DS_Store
+.vscode/
+
+# Temporary
+*.tmp

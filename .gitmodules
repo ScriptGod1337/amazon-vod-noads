@@ -1,0 +1,4 @@
+[submodule "analysis/revanced-patches"]
+	path = analysis/revanced-patches
+	url = https://github.com/ReVanced/revanced-patches.git
+	branch = main
