@@ -6,6 +6,7 @@ Patch Amazon Prime Video APKs to skip server-inserted stream ads using ReVanced 
 - `analysis/revanced-patches` (git submodule): upstream ReVanced patches source.
 - `patches/revanced-primevideo-skipads.patch`: local diff applied on top of upstream to make the Prime Video skip-ads patch more robust across app versions.
 - `analysis/scripts/patch-primevideo-skipads.sh`: end-to-end build + patch script.
+- `analysis/scripts/patch-primevideo-skipads-dex.sh`: dex-only patch script (updates only the dex containing the target class, then resigns).
 - `docs/AI_RUNBOOK.md`: what was changed and how to adapt when a new APK version breaks matching.
 
 ## Usage
@@ -13,7 +14,12 @@ Patch Amazon Prime Video APKs to skip server-inserted stream ads using ReVanced 
 analysis/scripts/patch-primevideo-skipads.sh <input.apk> [output.apk]
 ```
 
-Alternative (no ReVanced CLI; smali injection):
+Alternative (no ReVanced CLI; dex-only patch, recommended):
+```bash
+analysis/scripts/patch-primevideo-skipads-dex.sh <input.apk> [output.apk]
+```
+
+Alternative (no ReVanced CLI; apktool smali injection, more fragile):
 ```bash
 analysis/scripts/patch-primevideo-skipads-smali.sh <input.apk> [output.apk]
 ```

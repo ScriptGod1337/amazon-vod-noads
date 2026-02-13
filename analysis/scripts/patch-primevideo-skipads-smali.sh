@@ -29,6 +29,9 @@ Options:
 Notes:
   - If no keystore options are provided, default uber-apk-signer debug signing is used.
   - This script modifies the decompiled smali and rebuilds a new APK; it never edits the input APK in place.
+  - WARNING: apktool rebuilds/reassembles a lot of content. For some apps this can cause instability.
+    Prefer patch-primevideo-skipads-dex.sh which only rewrites the single classesN.dex that contains the
+    patched class.
 EOF
 }
 
@@ -191,6 +194,11 @@ LOCALS_COUNT="$(
 [[ "$LOCALS_COUNT" != "" ]] || fail "Could not detect .locals for enter(Trigger) in $SERVER_SMALI"
 (( LOCALS_COUNT >= 7 )) || fail "enter(Trigger) has only .locals $LOCALS_COUNT; need at least 7 for safe injection"
 
+VIDEO_PLAYER_INVOKE="invoke-virtual"
+if rg -q '^\\.class .*\\binterface\\b' "$VIDEO_PLAYER_SMALI"; then
+  VIDEO_PLAYER_INVOKE="invoke-interface"
+fi
+
 ANCHOR_STATE="$(
   awk '
     BEGIN { in_method=0; saw_get_primary=0; saw_move_result=0 }
@@ -240,7 +248,7 @@ PLAYER_REGISTER="$(
 
 echo "[2/5] Injecting skip-ads smali into ServerInsertedAdBreakState.enter()"
 TMP_SMALI="${SERVER_SMALI}.tmp"
-awk -v reg="$PLAYER_REGISTER" '
+awk -v reg="$PLAYER_REGISTER" -v player_invoke="$VIDEO_PLAYER_INVOKE" '
   BEGIN { in_method=0; saw_get_primary=0; inserted=0 }
   {
     print
@@ -254,47 +262,50 @@ awk -v reg="$PLAYER_REGISTER" '
     }
     if (in_method && saw_get_primary && $0 ~ /^[[:space:]]*move-result-object v[0-9]+/ && inserted == 0) {
       print ""
-      print "    if-eqz p1, :rvd_skip_ads_original"
-      print "    if-eqz " reg ", :rvd_skip_ads_original"
+      # Important: match the working ReVanced patch behavior:
+      # always exit enter() after our attempt (even if it fails), never fall back to the original method body.
+      print "    if-eqz p1, :rvd_skip_ads_return"
+      print "    if-eqz " reg ", :rvd_skip_ads_return"
       print ""
       print "    :rvd_try_start"
-      print "    invoke-virtual {p1}, Lcom/amazon/avod/media/ads/internal/state/AdBreakTrigger;->getSeekStartPosition()Lcom/amazon/avod/media/TimeSpan;"
+      print "    invoke-virtual {p1}, Lcom/amazon/avod/media/ads/internal/state/AdBreakTrigger;->getBreak()Lcom/amazon/avod/media/ads/AdBreak;"
       print "    move-result-object v1"
       print ""
-      print "    if-eqz v1, :rvd_skip_ads_normal"
+      print "    invoke-virtual {p1}, Lcom/amazon/avod/media/ads/internal/state/AdBreakTrigger;->getSeekStartPosition()Lcom/amazon/avod/media/TimeSpan;"
+      print "    move-result-object v2"
+      print ""
+      print "    if-eqz v2, :rvd_skip_ads_normal"
       print ""
       print "    invoke-virtual {p1}, Lcom/amazon/avod/media/ads/internal/state/AdBreakTrigger;->getSeekTarget()Lcom/amazon/avod/media/TimeSpan;"
-      print "    move-result-object v1"
-      print "    if-eqz v1, :rvd_skip_ads_original"
-      print "    invoke-virtual {v1}, Lcom/amazon/avod/media/TimeSpan;->getTotalMilliseconds()J"
-      print "    move-result-wide v2"
-      print "    invoke-virtual {" reg ", v2, v3}, Lcom/amazon/avod/media/playback/VideoPlayer;->seekTo(J)V"
+      print "    move-result-object v2"
+      print "    invoke-virtual {v2}, Lcom/amazon/avod/media/TimeSpan;->getTotalMilliseconds()J"
+      print "    move-result-wide v3"
+      print "    " player_invoke " {" reg ", v3, v4}, Lcom/amazon/avod/media/playback/VideoPlayer;->seekTo(J)V"
       print ""
       print "    goto :rvd_skip_ads_done"
       print ""
       print "    :rvd_skip_ads_normal"
-      print "    invoke-virtual {p1}, Lcom/amazon/avod/media/ads/internal/state/AdBreakTrigger;->getBreak()Lcom/amazon/avod/media/ads/AdBreak;"
-      print "    move-result-object v1"
-      print "    if-eqz v1, :rvd_skip_ads_original"
+      print "    " player_invoke " {" reg "}, Lcom/amazon/avod/media/playback/VideoPlayer;->getCurrentPosition()J"
+      print "    move-result-wide v3"
       print "    invoke-interface {v1}, Lcom/amazon/avod/media/ads/AdBreak;->getDurationExcludingAux()Lcom/amazon/avod/media/TimeSpan;"
-      print "    move-result-object v1"
-      print "    if-eqz v1, :rvd_skip_ads_original"
-      print "    invoke-virtual {" reg "}, Lcom/amazon/avod/media/playback/VideoPlayer;->getCurrentPosition()J"
-      print "    move-result-wide v4"
-      print "    invoke-virtual {v1}, Lcom/amazon/avod/media/TimeSpan;->getTotalMilliseconds()J"
-      print "    move-result-wide v2"
-      print "    add-long/2addr v4, v2"
-      print "    invoke-virtual {" reg ", v4, v5}, Lcom/amazon/avod/media/playback/VideoPlayer;->seekTo(J)V"
+      print "    move-result-object v2"
+      print "    invoke-virtual {v2}, Lcom/amazon/avod/media/TimeSpan;->getTotalMilliseconds()J"
+      print "    move-result-wide v5"
+      print "    add-long/2addr v3, v5"
+      print "    " player_invoke " {" reg ", v3, v4}, Lcom/amazon/avod/media/playback/VideoPlayer;->seekTo(J)V"
       print ""
       print "    :rvd_skip_ads_done"
       print "    new-instance v1, Lcom/amazon/avod/fsm/SimpleTrigger;"
-      print "    sget-object v6, Lcom/amazon/avod/media/ads/internal/state/AdEnabledPlayerTriggerType;->NO_MORE_ADS_SKIP_TRANSITION:Lcom/amazon/avod/media/ads/internal/state/AdEnabledPlayerTriggerType;"
-      print "    invoke-direct {v1, v6}, Lcom/amazon/avod/fsm/SimpleTrigger;-><init>(Ljava/lang/Object;)V"
+      print "    sget-object v2, Lcom/amazon/avod/media/ads/internal/state/AdEnabledPlayerTriggerType;->NO_MORE_ADS_SKIP_TRANSITION:Lcom/amazon/avod/media/ads/internal/state/AdEnabledPlayerTriggerType;"
+      print "    invoke-direct {v1, v2}, Lcom/amazon/avod/fsm/SimpleTrigger;-><init>(Ljava/lang/Object;)V"
       print "    invoke-virtual {p0, v1}, Lcom/amazon/avod/fsm/StateBase;->doTrigger(Lcom/amazon/avod/fsm/Trigger;)V"
       print "    :rvd_try_end"
-      print "    return-void"
+      print "    goto :rvd_skip_ads_return"
       print ""
-      print "    .catch Ljava/lang/Exception; {:rvd_try_start .. :rvd_try_end} :rvd_skip_ads_original"
+      print "    .catch Ljava/lang/Exception; {:rvd_try_start .. :rvd_try_end} :rvd_skip_ads_return"
+      print ""
+      print "    :rvd_skip_ads_return"
+      print "    return-void"
       print ""
       print "    :rvd_skip_ads_original"
       inserted=1
@@ -312,7 +323,7 @@ awk -v reg="$PLAYER_REGISTER" '
 mv "$TMP_SMALI" "$SERVER_SMALI"
 
 POST_OK="0"
-if rg -q ':rvd_skip_ads_original' "$SERVER_SMALI" && rg -q 'NO_MORE_ADS_SKIP_TRANSITION' "$SERVER_SMALI"; then
+if rg -q ':rvd_skip_ads_return' "$SERVER_SMALI" && rg -q 'NO_MORE_ADS_SKIP_TRANSITION' "$SERVER_SMALI"; then
   POST_OK="1"
 fi
 [[ "$POST_OK" == "1" ]] || fail "Post-injection verification failed."

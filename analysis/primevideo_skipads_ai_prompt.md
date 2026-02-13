@@ -40,19 +40,17 @@ Map the patch to these Prime classes and behaviors:
 4. Decide if upstream fingerprint is still valid.
 5. If incompatible, adapt patch anchor safely.
 6. Implement patch pipeline script:
-   - decompile
-   - inject smali
-   - rebuild
-   - sign
+   - prefer dex-only patching when possible (update a single `classesN.dex`, then resign)
+   - otherwise: decompile (apktool) -> inject smali -> rebuild -> sign
 7. Add strict fail-safe checks:
    - required symbol/class/method existence checks
    - anchor state classification: `clean`, `patched`, `incompatible`
    - stop on `patched` (prevent double patch)
    - stop on `incompatible`
 8. Add post-injection verification checks.
-9. Add runtime fail-open behavior in injected code:
-   - if unexpected/null trigger data, jump back to original method flow
-   - do NOT crash playback
+9. Add runtime safety behavior in injected code:
+   - wrap injected logic in a `try/catch (Exception)` and exit the method (`return-void`) on failure
+   - do not partially run injected logic and then continue into original `enter()` code (this can leave the state machine in a broken/undefined state)
 10. Validate resulting APK:
    - zipalign/signature verified
    - patched block present in rebuilt smali
@@ -60,9 +58,22 @@ Map the patch to these Prime classes and behaviors:
 
 ## Safety Requirements
 - Never silently patch if anchor does not match expected shape.
-- Prefer preserving original logic if any ambiguity exists.
+- Prefer preserving original APK structure if any ambiguity exists:
+  - avoid full apktool rebuild for release APKs when possible; round-tripping resources/dex can cause runtime instability even if the smali change is correct.
 - Any detected incompatibility must hard-fail with explicit reason.
 - Prevent accidental re-patching of already patched APK.
+
+## Dex/Smali Pitfalls (must handle)
+- **Interface vs class invoke**: In some Prime builds (e.g. `3.0.438.2347`), `com.amazon.avod.media.playback.VideoPlayer` is an **interface**.
+  - Calling it with `invoke-virtual` will crash at runtime with `IncompatibleClassChangeError`.
+  - You must detect whether `VideoPlayer` is declared as an interface and then emit:
+    - `invoke-interface` for `VideoPlayer.getCurrentPosition()` and `VideoPlayer.seekTo(J)`
+    - `invoke-virtual` only if it is a concrete class.
+  - Detection options:
+    - from smali header (apktool/baksmali output): `.class public interface abstract Lcom/amazon/avod/media/playback/VideoPlayer;`
+    - from dex metadata: check the class_def `access_flags & ACC_INTERFACE`.
+- **Rebuild fragility**: apktool reassembly can change multi-dex layout or resource table encoding and lead to subtle playback/UI issues.
+  - Prefer a dex-only patch flow: disassemble one `classesN.dex` -> patch -> reassemble -> update only that entry in the APK -> resign.
 
 ## Signing Requirements
 - Support default debug signing.
@@ -79,23 +90,17 @@ Map the patch to these Prime classes and behaviors:
 
 ## Known Latest-Version Hint (3.0.438.2347)
 - Symptom seen in latest patch attempts:
-  - app can crash during playback after injection.
-- Likely cause:
-  - injected skip logic assumes trigger/break/timespan objects are always valid and forces the ad-skip path too early.
+  - app can crash during seeking with `java.lang.IncompatibleClassChangeError` if the injected code uses the wrong invoke opcode for `VideoPlayer`.
+  - apktool-rebuilt APKs can show unstable player/UI behavior even when the injection “works” on paper.
 - Fix pattern that worked:
-  - keep the same anchor (right after `getPrimaryPlayer()` `move-result-object`),
-  - add fail-open guards before using objects:
-    - `if-eqz p1` -> jump back to original method flow,
-    - `if-eqz getSeekTarget()` -> jump back,
-    - `if-eqz getBreak()` -> jump back,
-    - `if-eqz getDurationExcludingAux()` -> jump back,
-  - only execute `seekTo(...) + doTrigger(NO_MORE_ADS_SKIP_TRANSITION)` when guards pass,
-  - otherwise continue original method logic unchanged.
-- Implementation note:
-  - use a dedicated fallback label (example: `:rvd_skip_ads_original`) that lands before original instructions (not at method end).
+  - keep the same anchor (right after `getPrimaryPlayer()` + `move-result-object vX`),
+  - inject skip logic and then **unconditionally exit `enter()`** (`return-void`), matching the ReVanced approach,
+  - ensure `VideoPlayer` calls use `invoke-interface` when `VideoPlayer` is an interface (common in 3.0.438.2347),
+  - prefer dex-only patching (do not rebuild the whole APK with apktool unless you have to).
 
 ## Existing Local Script (use/update this first)
 - `analysis/scripts/patch-primevideo-skipads.sh`
+- If ReVanced CLI is unavailable or too heavy, prefer `analysis/scripts/patch-primevideo-skipads-dex.sh`.
 
 ## Definition of Done
 - Patch script produces a signed patched APK for target version.
