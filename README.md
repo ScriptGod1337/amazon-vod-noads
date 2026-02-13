@@ -13,6 +13,11 @@ Patch Amazon Prime Video APKs to skip server-inserted stream ads using ReVanced 
 analysis/scripts/patch-primevideo-skipads.sh <input.apk> [output.apk]
 ```
 
+Alternative (no ReVanced CLI; smali injection):
+```bash
+analysis/scripts/patch-primevideo-skipads-smali.sh <input.apk> [output.apk]
+```
+
 Prereqs the script handles (installs to `/tmp`):
 - JDK 21 (for Gradle)
 - Android SDK (platform 34 + build-tools 34.0.0)

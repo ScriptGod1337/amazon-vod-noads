@@ -10,6 +10,9 @@ analysis/tools/revanced/*.jar
 analysis/tools/revanced/*.rvp
 analysis/tools/revanced/*.asc
 
+# Smali patch tools (downloaded)
+analysis/tools/smali/
+
 # Local build outputs
 analysis/revanced-patches/**/build/
 analysis/revanced-patches/.gradle/
