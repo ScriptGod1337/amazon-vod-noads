@@ -108,3 +108,9 @@ Map the patch to these Prime classes and behaviors:
 - Ad-skip logic is injected and verified in smali.
 - Script fails safely on incompatible versions.
 - Summary includes exact file changes, commands used, and generated APK paths.
+
+## Related: Cast Playback Ads
+If ads still appear when using "Cast to device", see `analysis/primevideo_cast_ads_ai_prompt.md` for an analysis workflow to determine whether cast ads are controlled by:
+- server-side stream insertion,
+- the receiver app/device,
+- or client-side Android APK code.
