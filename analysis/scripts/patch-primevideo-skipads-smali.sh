@@ -127,16 +127,20 @@ SIGNED_DIR="${WORK_DIR}/signed"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 echo "[1/5] Decompiling APK"
-java -jar "$APKTOOL_JAR" d -f -r -q -p "$APKTOOL_FRAMEWORK_DIR" "$INPUT_APK" -o "$APP_DIR" >/dev/null
+if ! java -jar "$APKTOOL_JAR" d -f -r -q -p "$APKTOOL_FRAMEWORK_DIR" "$INPUT_APK" -o "$APP_DIR" >/dev/null 2>"${WORK_DIR}/apktool-decode.err"; then
+  echo "apktool decode failed; last 80 lines:" >&2
+  tail -n 80 "${WORK_DIR}/apktool-decode.err" >&2 || true
+  fail "apktool decode failed"
+fi
 
-SERVER_SMALI="$(rg --files "$APP_DIR" | rg 'ServerInsertedAdBreakState\\.smali$' | head -n 1)"
+SERVER_SMALI="$(find "$APP_DIR" -type f -name 'ServerInsertedAdBreakState.smali' -print -quit)"
 [[ "$SERVER_SMALI" != "" ]] || fail "Could not find ServerInsertedAdBreakState.smali in decompiled APK."
 
 check_path() {
-  local suffix="$1"
+  local rel="$1"
   local path
-  path="$(rg --files "$APP_DIR" | rg "$suffix" | head -n 1)"
-  [[ "$path" != "" ]] || fail "Required class not found for pattern: $suffix"
+  path="$(find "$APP_DIR" -type f -path "*/$rel" -print -quit)"
+  [[ "$path" != "" ]] || fail "Required class not found for path suffix: $rel"
   echo "$path"
 }
 
@@ -146,27 +150,27 @@ check_contains() {
   rg -q "$pattern" "$file" || fail "Required symbol missing in $file: $pattern"
 }
 
-ADBREAK_TRIGGER_SMALI="$(check_path 'com/amazon/avod/media/ads/internal/state/AdBreakTrigger\\.smali$')"
-ADBREAK_SMALI="$(check_path 'com/amazon/avod/media/ads/AdBreak\\.smali$')"
-VIDEO_PLAYER_SMALI="$(check_path 'com/amazon/avod/media/playback/VideoPlayer\\.smali$')"
-TIMESPAN_SMALI="$(check_path 'com/amazon/avod/media/TimeSpan\\.smali$')"
-STATEBASE_SMALI="$(check_path 'com/amazon/avod/fsm/StateBase\\.smali$')"
-SIMPLETRIGGER_SMALI="$(check_path 'com/amazon/avod/fsm/SimpleTrigger\\.smali$')"
-AD_TRIGGER_TYPE_SMALI="$(check_path 'com/amazon/avod/media/ads/internal/state/AdEnabledPlayerTriggerType\\.smali$')"
+ADBREAK_TRIGGER_SMALI="$(check_path 'com/amazon/avod/media/ads/internal/state/AdBreakTrigger.smali')"
+ADBREAK_SMALI="$(check_path 'com/amazon/avod/media/ads/AdBreak.smali')"
+VIDEO_PLAYER_SMALI="$(check_path 'com/amazon/avod/media/playback/VideoPlayer.smali')"
+TIMESPAN_SMALI="$(check_path 'com/amazon/avod/media/TimeSpan.smali')"
+STATEBASE_SMALI="$(check_path 'com/amazon/avod/fsm/StateBase.smali')"
+SIMPLETRIGGER_SMALI="$(check_path 'com/amazon/avod/fsm/SimpleTrigger.smali')"
+AD_TRIGGER_TYPE_SMALI="$(check_path 'com/amazon/avod/media/ads/internal/state/AdEnabledPlayerTriggerType.smali')"
 
-check_contains "$ADBREAK_TRIGGER_SMALI" '\\.method public getSeekStartPosition\\(\\)Lcom/amazon/avod/media/TimeSpan;'
-check_contains "$ADBREAK_TRIGGER_SMALI" '\\.method public getSeekTarget\\(\\)Lcom/amazon/avod/media/TimeSpan;'
-check_contains "$ADBREAK_SMALI" '\\.method public abstract getDurationExcludingAux\\(\\)Lcom/amazon/avod/media/TimeSpan;'
-check_contains "$VIDEO_PLAYER_SMALI" '\\.method public abstract getCurrentPosition\\(\\)J'
-check_contains "$VIDEO_PLAYER_SMALI" '\\.method public abstract seekTo\\(J\\)V'
-check_contains "$TIMESPAN_SMALI" '\\.method public getTotalMilliseconds\\(\\)J'
-check_contains "$STATEBASE_SMALI" '\\.method protected doTrigger\\(Lcom/amazon/avod/fsm/Trigger;\\)V'
-check_contains "$SIMPLETRIGGER_SMALI" '\\.method public constructor <init>\\(Ljava/lang/Object;\\)V'
+check_contains "$ADBREAK_TRIGGER_SMALI" '\.method .*getSeekStartPosition\(\)Lcom/amazon/avod/media/TimeSpan;'
+check_contains "$ADBREAK_TRIGGER_SMALI" '\.method .*getSeekTarget\(\)Lcom/amazon/avod/media/TimeSpan;'
+check_contains "$ADBREAK_SMALI" '\.method .*getDurationExcludingAux\(\)Lcom/amazon/avod/media/TimeSpan;'
+check_contains "$VIDEO_PLAYER_SMALI" '\.method .*getCurrentPosition\(\)J'
+check_contains "$VIDEO_PLAYER_SMALI" '\.method .*seekTo\(J\)V'
+check_contains "$TIMESPAN_SMALI" '\.method .*getTotalMilliseconds\(\)J'
+check_contains "$STATEBASE_SMALI" '\.method .*doTrigger\(Lcom/amazon/avod/fsm/Trigger;\)V'
+check_contains "$SIMPLETRIGGER_SMALI" '\.method .* constructor <init>\(Ljava/lang/Object;\)V'
 check_contains "$AD_TRIGGER_TYPE_SMALI" 'NO_MORE_ADS_SKIP_TRANSITION'
 
 ENTER_METHOD_COUNT="$(
   awk '
-    /^\\.method public enter\\(Lcom\\/amazon\\/avod\\/fsm\\/Trigger;\\)V$/ { c++ }
+    $0 == ".method public enter(Lcom/amazon/avod/fsm/Trigger;)V" { c++ }
     END { print c + 0 }
   ' "$SERVER_SMALI"
 )"
@@ -175,13 +179,13 @@ ENTER_METHOD_COUNT="$(
 LOCALS_COUNT="$(
   awk '
     BEGIN { in_method=0 }
-    /^\\.method public enter\\(Lcom\\/amazon\\/avod\\/fsm\\/Trigger;\\)V$/ { in_method=1; next }
-    in_method && /^[[:space:]]*\\.locals[[:space:]]+[0-9]+/ {
+    $0 == ".method public enter(Lcom/amazon/avod/fsm/Trigger;)V" { in_method=1; next }
+    in_method && /^[[:space:]]*\.locals[[:space:]]+[0-9]+/ {
       match($0, /[0-9]+/)
       print substr($0, RSTART, RLENGTH)
       exit
     }
-    in_method && /^\\.end method$/ { exit }
+    in_method && $0 == ".end method" { exit }
   ' "$SERVER_SMALI"
 )"
 [[ "$LOCALS_COUNT" != "" ]] || fail "Could not detect .locals for enter(Trigger) in $SERVER_SMALI"
@@ -190,8 +194,8 @@ LOCALS_COUNT="$(
 ANCHOR_STATE="$(
   awk '
     BEGIN { in_method=0; saw_get_primary=0; saw_move_result=0 }
-    /^\\.method public enter\\(Lcom\\/amazon\\/avod\\/fsm\\/Trigger;\\)V$/ { in_method=1; next }
-    in_method && /getPrimaryPlayer\\(\\)Lcom\\/amazon\\/avod\\/media\\/playback\\/VideoPlayer;/ && saw_get_primary == 0 {
+    $0 == ".method public enter(Lcom/amazon/avod/fsm/Trigger;)V" { in_method=1; next }
+    in_method && index($0, "getPrimaryPlayer()Lcom/amazon/avod/media/playback/VideoPlayer;") > 0 && saw_get_primary == 0 {
       saw_get_primary=1
       next
     }
@@ -201,13 +205,13 @@ ANCHOR_STATE="$(
     }
     in_method && saw_move_result && $0 ~ /^[[:space:]]*$/ { next }
     in_method && saw_move_result {
-      if ($0 ~ /:rvd_skip_ads_original/ || $0 ~ /getSeekStartPosition\\(\\)Lcom\\/amazon\\/avod\\/media\\/TimeSpan;/) print "patched"
-      else if ($0 ~ /Lapp\\/revanced\\/extension\\/primevideo\\/ads\\/SkipAdsPatch;->enterServerInsertedAdBreakState/) print "patched"
-      else if ($0 ~ /const\\/4 /) print "clean"
+      if (index($0, ":rvd_skip_ads_original") > 0 || index($0, "getSeekStartPosition()Lcom/amazon/avod/media/TimeSpan;") > 0) print "patched"
+      else if (index($0, "Lapp/revanced/extension/primevideo/ads/SkipAdsPatch;->enterServerInsertedAdBreakState") > 0) print "patched"
+      else if ($0 ~ /const\/4 /) print "clean"
       else print "incompatible"
       exit
     }
-    in_method && /^\\.end method$/ { exit }
+    in_method && $0 == ".end method" { exit }
   ' "$SERVER_SMALI"
 )"
 
@@ -222,14 +226,14 @@ fi
 PLAYER_REGISTER="$(
   awk '
     BEGIN { in_method=0; saw_get_primary=0 }
-    /^\\.method public enter\\(Lcom\\/amazon\\/avod\\/fsm\\/Trigger;\\)V$/ { in_method=1; next }
-    in_method && /getPrimaryPlayer\\(\\)Lcom\\/amazon\\/avod\\/media\\/playback\\/VideoPlayer;/ { saw_get_primary=1; next }
+    $0 == ".method public enter(Lcom/amazon/avod/fsm/Trigger;)V" { in_method=1; next }
+    in_method && index($0, "getPrimaryPlayer()Lcom/amazon/avod/media/playback/VideoPlayer;") > 0 { saw_get_primary=1; next }
     in_method && saw_get_primary && /move-result-object v[0-9]+/ {
       match($0, /v[0-9]+/)
       print substr($0, RSTART, RLENGTH)
       exit
     }
-    in_method && /^\\.end method$/ { in_method=0; saw_get_primary=0 }
+    in_method && $0 == ".end method" { in_method=0; saw_get_primary=0 }
   ' "$SERVER_SMALI"
 )"
 [[ "$PLAYER_REGISTER" != "" ]] || fail "Could not detect primary player register in: $SERVER_SMALI"
@@ -240,11 +244,11 @@ awk -v reg="$PLAYER_REGISTER" '
   BEGIN { in_method=0; saw_get_primary=0; inserted=0 }
   {
     print
-    if ($0 ~ /^\\.method public enter\\(Lcom\\/amazon\\/avod\\/fsm\\/Trigger;\\)V$/) {
+    if ($0 == ".method public enter(Lcom/amazon/avod/fsm/Trigger;)V") {
       in_method=1
       next
     }
-    if (in_method && $0 ~ /getPrimaryPlayer\\(\\)Lcom\\/amazon\\/avod\\/media\\/playback\\/VideoPlayer;/ && inserted == 0) {
+    if (in_method && index($0, "getPrimaryPlayer()Lcom/amazon/avod/media/playback/VideoPlayer;") > 0 && inserted == 0) {
       saw_get_primary=1
       next
     }
@@ -296,7 +300,7 @@ awk -v reg="$PLAYER_REGISTER" '
       inserted=1
       saw_get_primary=0
     }
-    if (in_method && $0 ~ /^\\.end method$/) {
+    if (in_method && $0 == ".end method") {
       in_method=0
       saw_get_primary=0
     }
@@ -314,7 +318,11 @@ fi
 [[ "$POST_OK" == "1" ]] || fail "Post-injection verification failed."
 
 echo "[3/5] Rebuilding APK"
-java -jar "$APKTOOL_JAR" b -q -p "$APKTOOL_FRAMEWORK_DIR" "$APP_DIR" -o "$UNSIGNED_APK" >/dev/null
+if ! java -jar "$APKTOOL_JAR" b -q -p "$APKTOOL_FRAMEWORK_DIR" "$APP_DIR" -o "$UNSIGNED_APK" >/dev/null 2>"${WORK_DIR}/apktool-build.err"; then
+  echo "apktool build failed; last 120 lines:" >&2
+  tail -n 120 "${WORK_DIR}/apktool-build.err" >&2 || true
+  fail "apktool build failed"
+fi
 
 echo "[4/5] Signing APK"
 mkdir -p "$SIGNED_DIR"
@@ -328,7 +336,11 @@ if [[ "$KS_PATH" != "" ]]; then
     SIGN_CMD+=(--ksKeyPass "$KEY_PASS")
   fi
 fi
-"${SIGN_CMD[@]}" >/dev/null
+if ! "${SIGN_CMD[@]}" >/dev/null 2>"${WORK_DIR}/sign.err"; then
+  echo "signing failed; last 120 lines:" >&2
+  tail -n 120 "${WORK_DIR}/sign.err" >&2 || true
+  fail "signing failed"
+fi
 
 SIGNED_APK="$(find "$SIGNED_DIR" -maxdepth 1 -type f -name "*.apk" ! -name "*.idsig" | head -n 1)"
 [[ "$SIGNED_APK" != "" ]] || fail "Signing finished but no output APK was found."
@@ -338,4 +350,3 @@ mkdir -p "$(dirname "$OUTPUT_APK")"
 cp -f "$SIGNED_APK" "$OUTPUT_APK"
 
 echo "Patched APK created: $OUTPUT_APK"
-
