@@ -459,30 +459,139 @@ The patch exploits the fact that the entire ad playback system funnels through a
 
 **Seek-over-ads disabled:** Any seek operation that would normally detect an unplayed ad break between the origin and destination now gets `null` from `selectPriorBreakIfUnPlayed()`. No `AdBreakTrigger` with `CHAPTERING_DUE_TO_SEEK` source is created, so the seek completes without interruption.
 
+### Patch Control Flow
+
+The following diagrams show exactly how the patch affects each ad scenario. The left side shows the **original flow** and the right side shows the **patched flow**.
+
+#### Pre-roll Ads
+
+```
+ORIGINAL:                                      PATCHED:
+
+Session starts                                  Session starts
+    │                                               │
+    ▼                                               ▼
+updateAdPlan(plan)                              updateAdPlan(plan)
+    │                                               │
+    ▼                                               ▼
+AD_PLAN_READY trigger                           AD_PLAN_READY trigger
+    │                                               │
+    ▼                                               ▼
+CheckPrerollState.enter()                       CheckPrerollState.enter()
+    │                                               │
+    ▼                                               ▼
+selectNextBreak(plan, startTime)                selectNextBreak(plan, startTime)
+    │                                               │
+    ▼                                               ▼
+Returns AdBreak (preroll at t=0)                Returns null ◄── PATCHED
+    │                                               │
+    ▼                                               ▼
+PrerollStatus → isAvailableForPlayback()=true   PrerollStatus → null break → not available
+    │                                               │
+    ├─ fires PLAY trigger                           ├─ fires PLAY trigger
+    ├─ fires BEGIN_AD_BREAK trigger                 └─ no BEGIN_AD_BREAK ──► content starts
+    ▼                                                  immediately
+AD_BREAK → AD_CLIP → plays 30s ad
+    │
+    ▼
+NO_MORE_ADS → TRANSITION → content starts
+```
+
+#### Mid-roll Ads
+
+```
+ORIGINAL:                                      PATCHED:
+
+Content playing at position t                   Content playing at position t
+    │                                               │
+    ▼                                               ▼
+MonitoringPrimaryState.enter()                  MonitoringPrimaryState.enter()
+    │                                               │
+    ▼                                               ▼
+selectNextBreak(plan, t)                        selectNextBreak(plan, t)
+    │                                               │
+    ▼                                               ▼
+Returns AdBreak at t=900s                       Returns null ◄── PATCHED
+    │                                               │
+    ▼                                               ▼
+Schedules TimelineMonitoringTask                if-eqz null → :cond_3
+    │                                               │
+    ▼                                               ▼
+Player reaches t=900s                           LiveAdTrackingManager.init()
+    │                                               │
+    ▼                                               ▼
+Task fires BEGIN_AD_BREAK                       return (no task scheduled)
+    │                                               │
+    ▼                                               ▼
+AD_BREAK → AD_CLIP → plays ads                 Content plays uninterrupted
+    │                                               through t=900s and beyond
+    ▼
+NO_MORE_ADS → back to monitoring
+```
+
+#### Seek Over Ad Break
+
+```
+ORIGINAL:                                      PATCHED:
+
+User seeks from t=300s to t=1200s               User seeks from t=300s to t=1200s
+(ad break exists at t=900s)                     (ad break exists at t=900s)
+    │                                               │
+    ▼                                               ▼
+seekTo(1200s) → SeekTrigger                     seekTo(1200s) → SeekTrigger
+    │                                               │
+    ▼                                               ▼
+selectPriorBreakIfUnPlayed(                     selectPriorBreakIfUnPlayed(
+  plan, seekTarget=1200, seekFrom=300)            plan, seekTarget=1200, seekFrom=300)
+    │                                               │
+    ▼                                               ▼
+getPriorBreak(plan, 1200) → break@900           Returns null ◄── PATCHED
+getPriorBreak(plan, 300)  → null                    │
+IDs differ → return break@900                       ▼
+    │                                           Seek completes to t=1200s
+    ▼                                           No interruption
+AdBreakTrigger(break@900,
+  source=CHAPTERING_DUE_TO_SEEK)
+    │
+    ▼
+Forced to watch ad break at t=900s
+    │
+    ▼
+After ads, resumes seek to t=1200s
+```
+
 ### Why This Approach Over Alternatives
 
-| Alternative | Problem |
-|-------------|---------|
-| DNS/host blocking | Only stops tracking beacons. SSAI ads share CDN with content. |
-| MITM proxy | Requires cert pinning bypass (APK patch anyway), very complex |
-| Block ad plan API | Same API returns content URLs — breaks all playback |
-| Patch `AdPlaybackFeature` | Only hides UI; ads still play (black screen with no controls) |
-| Patch `AdClipState.enter()` | Doesn't prevent FSM from entering AD_BREAK state; may cause stuck state |
-| Patch `PrepareAdPlan` | Might cause NPEs if other code expects a non-null AdPlan |
-| Patch `hasPlayableAds()` | Not consulted by the FSM during actual playback transitions |
-| Patch `AdsConfig` flags | Too many flags; incomplete coverage; server can override |
-| Patch `ContentType` parser | Ad segments still play — just without ad UI. Doesn't skip anything. |
-| Force `AdInsertion.NONE` | Harder to find exact parsing site; value flows through many layers |
-| Return `EmptyAdPlan` from factory | Factory method is ~1500 lines; constructing EmptyAdPlan is fragile |
-| Patch monitoring state only | Misses pre-rolls and seek-over detection; needs 3 separate patches |
-| **Patch `AdBreakSelector`** | **Single class, 4 methods, clean null returns, no side effects** |
+#### Detailed Comparison
 
-The `AdBreakSelector` patch is the cleanest because:
-1. **Minimal surface area** — 4 methods in 1 class
-2. **No side effects** — null is an expected return value (happens when there are genuinely no ads)
-3. **No state corruption** — the FSM never enters ad states, so no cleanup issues
-4. **Complete coverage** — handles pre-rolls, mid-rolls, and seek-forced ads
-5. **Both CSAI and SSAI** — the selector is used by both client-side and server-side ad insertion paths
+| Approach | Preroll | Midroll | Seek-Forced | No Ad Traffic | Difficulty | Breakage Risk |
+|----------|:-------:|:-------:|:-----------:|:-------------:|:----------:|:-------------:|
+| **AdBreakSelector patch** | **Yes** | **Yes** | **Yes** | No | **Low** | **Very low** |
+| DNS/host blocking | No | No | No | Beacons only | Low | None |
+| MITM proxy | Maybe | Maybe | Maybe | Yes | Very high | High |
+| Block ad plan API | — | — | — | Yes | Low | **Breaks all playback** |
+| Patch `AdPlaybackFeature` | No | No | No | No | Medium | Low |
+| Patch `AdClipState.enter()` | No | No | No | No | Medium | High (stuck state) |
+| Patch `PrepareAdPlan` | Yes | Yes | Yes | Yes | Low | High (NPE risk) |
+| Patch `hasPlayableAds()` | No | No | No | No | Low | Low |
+| Patch `AdsConfig` flags | Partial | Partial | No | No | High | Medium |
+| Patch `ContentType` parser | No* | No* | Yes | No | Low | Low |
+| Force `AdInsertion.NONE` | Yes | Yes | Yes | Yes | Medium | Medium |
+| Return `EmptyAdPlan` | Yes | Yes | Yes | Partial | Medium | Medium |
+| Patch monitoring state only | No | Yes | No | No | Low | Low |
+
+*\* ContentType patch: ads still play as video content, just without ad UI/controls*
+
+#### Why AdBreakSelector Wins
+
+| Property | Detail |
+|----------|--------|
+| **Surface area** | 4 methods in 1 class — minimal change |
+| **Side effects** | None — `null` is an expected return (the no-ads code path) |
+| **State corruption** | Impossible — FSM never enters ad states, no cleanup needed |
+| **Coverage** | Pre-rolls + mid-rolls + seek-forced ads |
+| **Ad insertion modes** | Both CSAI and SSAI use the same selector |
+| **Crash risk** | Zero — every caller already handles `null` returns |
 
 ### Known Limitation: Pause Ads
 
