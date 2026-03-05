@@ -1,3 +1,16 @@
+# **REPO MOVED**
+> This repository has been merged into **[vod-noads](https://github.com/ScriptGod1337/vod-noads)**, which now covers Netflix, Disney+, HBO Max, and Prime Video.
+>
+> All analysis, patches, and scripts from this repo are available there under:
+> - `ANALYSIS.FIRETV.md`
+> - `patches/primevideo-patches/`
+> - `analysis/primevideo/`
+> - `docs/AI_RUNBOOK_PRIMEVIDEO.md`
+
+https://github.com/ScriptGod1337/vod-noads
+
+---
+
 # amazon-vod-noads
 
 Patch Amazon Prime Video APKs to skip server-inserted stream ads using ReVanced CLI, while keeping the patch logic reproducible for new APK versions.
